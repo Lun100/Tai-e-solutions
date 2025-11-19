@@ -33,21 +33,14 @@ import pascal.taie.analysis.graph.cfg.CFGBuilder;
 import pascal.taie.analysis.graph.cfg.Edge;
 import pascal.taie.config.AnalysisConfig;
 import pascal.taie.ir.IR;
-import pascal.taie.ir.exp.ArithmeticExp;
-import pascal.taie.ir.exp.ArrayAccess;
-import pascal.taie.ir.exp.CastExp;
-import pascal.taie.ir.exp.FieldAccess;
-import pascal.taie.ir.exp.NewExp;
-import pascal.taie.ir.exp.RValue;
-import pascal.taie.ir.exp.Var;
+import pascal.taie.ir.exp.*;
 import pascal.taie.ir.stmt.AssignStmt;
 import pascal.taie.ir.stmt.If;
 import pascal.taie.ir.stmt.Stmt;
 import pascal.taie.ir.stmt.SwitchStmt;
+import pascal.taie.util.collection.Pair;
 
-import java.util.Comparator;
-import java.util.Set;
-import java.util.TreeSet;
+import java.util.*;
 
 public class DeadCodeDetection extends MethodAnalysis {
 
@@ -69,8 +62,88 @@ public class DeadCodeDetection extends MethodAnalysis {
                 ir.getResult(LiveVariableAnalysis.ID);
         // keep statements (dead code) sorted in the resulting set
         Set<Stmt> deadCode = new TreeSet<>(Comparator.comparing(Stmt::getIndex));
-        // TODO - finish me
-        // Your task is to recognize dead code in ir and add it to deadCode
+        // Find all reachable statements
+        Set<Stmt> visited = new HashSet<>();
+        Set<Stmt> reachable = new HashSet<>();
+        Queue<Stmt> bfs = new LinkedList<>();
+        bfs.add(cfg.getEntry());
+        while(!bfs.isEmpty()) {
+            Stmt now = bfs.poll();
+            if(visited.contains(now)) {
+                continue;
+            }
+            visited.add(now);
+            //下面看赋值语句的情况
+            if(now instanceof  AssignStmt assignStmt){
+                LValue possiblefakevar = assignStmt.getLValue();
+                if(hasNoSideEffect(assignStmt.getRValue()) && possiblefakevar instanceof Var &&!liveVars.getOutFact(now).contains((Var)possiblefakevar)){
+                    ;
+                }
+                else reachable.add(now);
+                for(Stmt stmt : cfg.getSuccsOf(now)){
+                    if(!visited.contains(stmt)){
+                        bfs.add(stmt);
+                    }
+                }
+            }
+            else if(now instanceof If stmt_if){
+                Value condition = ConstantPropagation.evaluate(stmt_if.getCondition(),constants.getInFact(now));
+                if(condition.isConstant()){
+                    int val =  condition.getConstant();
+                    for(Edge<Stmt> edge : cfg.getOutEdgesOf(now)){
+                        if((val == 0 && edge.getKind() == Edge.Kind.IF_FALSE) || (val != 0 && edge.getKind() == Edge.Kind.IF_TRUE)){
+                            bfs.add(edge.getTarget());
+                        }
+                    }
+                }
+                else{
+                    for(Stmt stmt : cfg.getSuccsOf(now)){
+                        if(!visited.contains(stmt)){
+                            bfs.add(stmt);
+                        }
+                    }
+                }
+                reachable.add(now);
+            }
+            else if(now instanceof SwitchStmt switch_Stmt){
+                Value condition = ConstantPropagation.evaluate(switch_Stmt.getVar(),constants.getInFact(now));
+                if(condition.isConstant()){
+                    int val =  condition.getConstant();
+                    List<pascal.taie.util.collection.Pair<Integer, Stmt>> caseTargets = switch_Stmt.getCaseTargets();
+                    boolean iffind = false;
+                    for(Pair<Integer, Stmt> pair : caseTargets){
+                        if(pair.first() == val){
+                            iffind = true;
+                            bfs.add(pair.second());
+                        }
+                    }
+                    if(!iffind){
+                        bfs.add(switch_Stmt.getDefaultTarget());
+                    }
+                }
+                else{
+                    for(Stmt stmt : cfg.getSuccsOf(now)){
+                        if(!visited.contains(stmt)){
+                            bfs.add(stmt);
+                        }
+                    }
+                }
+                reachable.add(now);
+            }
+            else{
+                reachable.add(now);
+                for(Stmt stmt : cfg.getSuccsOf(now)){
+                    if(!visited.contains(stmt)){
+                        bfs.add(stmt);
+                    }
+                }
+            }
+        }
+        for (Stmt stmt : cfg.getNodes()) {
+            if (!reachable.contains(stmt)) {
+                deadCode.add(stmt);
+            }
+        }
         return deadCode;
     }
 
